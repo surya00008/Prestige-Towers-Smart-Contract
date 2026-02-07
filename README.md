@@ -150,18 +150,6 @@ By building this project, you learn:
 
 ---
 
-## ⚠️ Important Disclaimer
-
-This project is **for educational purposes only**.
-It is **not audited** and **not intended for production deployment**.
-
-Real-world systems should:
-
-* Store sensitive data off-chain
-* Undergo security audits
-* Use battle-tested libraries
-
----
 
 ## 📌 Final Notes
 
