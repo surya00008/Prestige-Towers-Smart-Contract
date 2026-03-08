@@ -1,7 +1,7 @@
 # 🏢 PrestigeTowers Smart Contract
 
-A blockchain-based **real estate booking & settlement system** built using Solidity.  
-This project demonstrates **state-driven contract design**, **secure fund handling**, and **on-chain voting mechanics** in an educational, interview-friendly manner.
+A blockchain-based **real estate booking & settlement system** built with Solidity `^0.8.24`.  
+This project demonstrates **state-driven contract design**, **secure fund handling**, and **on-chain voting mechanics** — audited and hardened against common vulnerabilities.
 
 ---
 
@@ -9,12 +9,11 @@ This project demonstrates **state-driven contract design**, **secure fund handli
 
 The **PrestigeTowers Smart Contract** models a real-world apartment booking scenario where:
 
-- Buyers book flats and make staged payments
+- A contractor (owner) deploys the contract with configurable flat count, price, booking deadline, and voting duration
+- Buyers book flats and make staged payments during the booking phase
 - Funds are securely locked in the contract
-- Buyers vote on project completion
-- Funds are released based on majority voting
-
-The contract is intentionally designed to prioritize **clarity, safety, and explainability** over extreme optimization.
+- Buyers vote **for** or **against** the contractor receiving funds
+- Funds are released or refunded based on the voting outcome
 
 ---
 
@@ -22,11 +21,13 @@ The contract is intentionally designed to prioritize **clarity, safety, and expl
 
 This contract is built around **explicit state management** and **defensive programming**.
 
-### This ensures:
-- Clear business logic
-- Easier reasoning and debugging
-- Safer access control
-- Interview-friendly explanations
+### Principles:
+
+- Clear, auditable business logic
+- Checks-effects-interactions pattern for all ETH transfers
+- Reentrancy protection on all payout functions
+- Constructor validation for all parameters
+- Structured events for off-chain traceability
 
 ---
 
@@ -34,30 +35,34 @@ This contract is built around **explicit state management** and **defensive prog
 
 ```text
 Booking  →  Voting  →  Settled
-````
+```
 
-### States Explained:
+### States:
 
-* **Booking**
+| State       | What happens                                                                | Who can act         |
+| ----------- | --------------------------------------------------------------------------- | ------------------- |
+| **Booking** | Buyers book flats (`buyFlat`) and deposit remaining amounts (`depositFund`) | Buyers              |
+| **Voting**  | Buyers vote for (`putVote`) or against (`voteAgainst`) the contractor       | Buyers              |
+| **Settled** | Funds released to contractor or refunded to buyers based on vote outcome    | Contractor / Buyers |
 
-  * Buyers can book flats
-  * Buyers can deposit remaining amounts
-  * No voting allowed
+- **Booking → Voting**: Anyone can trigger via `moveToVoting()` once the booking deadline passes
+- **Voting → Settled**: Automatically transitions via `_autoSettleIfNeeded()` when a claim is made after the voting window closes
 
-* **Voting**
+---
 
-  * Booking is closed
-  * Verified buyers can vote
-  * One vote per buyer
-  * Voting lasts for a fixed duration
+## 🏗️ Constructor Parameters
 
-* **Settled**
+```solidity
+constructor(
+    uint _totalFlats,       // Number of flats available
+    uint _flatPrice,        // Price per flat in wei
+    string memory _projectName, // Human-readable project name
+    uint _endTime,          // Booking duration in seconds
+    uint _votingDuration    // Voting duration in seconds
+)
+```
 
-  * Final state
-  * Funds are released based on voting result
-  * No further interaction allowed
-
-State transitions are explicit and guarded.
+All parameters are validated to be non-zero at deployment.
 
 ---
 
@@ -71,24 +76,29 @@ mapping(address => bool) buyerExists;
 
 ### Why this matters:
 
-* Avoids unsafe array index assumptions
-* Prevents duplicate buyers
-* Makes buyer checks explicit and readable
-* Improves auditability and reasoning
+- Never infers existence from array indices
+- Prevents duplicate bookings (one flat per address)
+- Makes buyer checks explicit and readable
+- `getAllBuyers()` getter returns only real buyers (skips internal index 0)
 
 ---
 
 ## 🗳️ Voting Mechanism
 
-The voting system enforces strict rules:
+The voting system supports **two-sided voting**:
 
-* Only verified buyers can vote
-* Owner cannot vote
-* One vote per buyer
-* Voting automatically expires after a fixed duration
-* Majority rule decides fund flow
+| Function        | Action                              |
+| --------------- | ----------------------------------- |
+| `putVote()`     | Vote **in favor** of the contractor |
+| `voteAgainst()` | Vote **against** the contractor     |
 
-Voting is time-bound and enforced using an on-chain timestamp window.
+### Rules:
+
+- Only verified buyers can vote
+- Owner (contractor) cannot vote
+- Each buyer can vote exactly once (for or against)
+- Voting window is configurable via `votingDuration`
+- Vote outcome: `totalVote > totalVoteAgainst` → contractor wins
 
 ---
 
@@ -96,76 +106,105 @@ Voting is time-bound and enforced using an on-chain timestamp window.
 
 Funds follow a strict lifecycle:
 
-* Locked during **Booking** and **Voting**
-* Released only after voting ends
-* Majority approval sends funds to contractor
-* Otherwise, buyers can claim refunds
+- **Locked** during Booking and Voting phases
+- **Released** only after voting ends and state is Settled
+
+| Outcome                   | Function                | Action                                       |
+| ------------------------- | ----------------------- | -------------------------------------------- |
+| Votes for > Votes against | `claimFundContractor()` | Entire contract balance sent to contractor   |
+| Votes for ≤ Votes against | `claimFundUser()`       | Each buyer claims their own deposited amount |
 
 ### ETH Transfer Safety:
 
-* Uses `call{value: amount}` (modern & safe)
-* State is updated **before** transfers
-* Double-claim prevention enforced
+- Uses `call{value: amount}("")` (recommended pattern)
+- State updated **before** external calls (checks-effects-interactions)
+- `nonReentrant` modifier on both claim functions
+- Double-claim prevention via `fundClaimed` / `contractFundClaimed` flags
+- `receive()` function accepts force-sent ETH
 
 ---
 
-## 🔐 Security & Safety Considerations
+## 🔐 Security Features
 
-This contract intentionally avoids common pitfalls:
-
-* No early fund withdrawal
-* No reentrancy risk in payout logic
-* No loops during fund distribution
-* No reliance on external automation
-* All critical actions are state-guarded
-
-Settlement happens via **lazy evaluation**, ensuring correctness without background execution.
+| Protection                | Implementation                                                 |
+| ------------------------- | -------------------------------------------------------------- |
+| Reentrancy guard          | Custom `nonReentrant` modifier with `_locked` flag             |
+| State machine enforcement | All functions gated by `ProjectState` checks                   |
+| No owner lock-in          | `moveToVoting()` is public — anyone can trigger after deadline |
+| Auto-settlement           | `_autoSettleIfNeeded()` called in both claim paths             |
+| Constructor validation    | All parameters validated `> 0`                                 |
+| CEI pattern               | State zeroed before ETH transfer in all payouts                |
+| No vote deadband          | `<=` condition prevents fund-locking edge cases                |
 
 ---
 
-## 🧪 How to Run the Contract
+## 📡 Events
 
-1. Open **Remix IDE**
+| Event                                   | Emitted When              |
+| --------------------------------------- | ------------------------- |
+| `FlatBooked(buyer, amount, flatIndex)`  | A buyer books a flat      |
+| `VoteCast(voter)`                       | A buyer votes in favor    |
+| `VoteCastAgainst(voter)`                | A buyer votes against     |
+| `ContractorClaimed(contractor, amount)` | Contractor claims funds   |
+| `BuyerRefunded(buyer, amount)`          | A buyer claims a refund   |
+| `StateChanged(from, to)`                | Project state transitions |
+
+---
+
+## 🧪 How to Run
+
+1. Open [Remix IDE](https://remix.ethereum.org)
 2. Create a new file: `PrestigeTowers.sol`
 3. Paste the contract code
-4. Compile using **Solidity ^0.8.x**
-5. Deploy with constructor parameters
-6. Interact using different accounts:
+4. Compile using **Solidity ^0.8.24**
+5. Deploy with constructor parameters, e.g.:
+   - `_totalFlats`: `10`
+   - `_flatPrice`: `10000000000000000000` (10 ETH)
+   - `_projectName`: `"Prestige Towers"`
+   - `_endTime`: `3600` (1 hour)
+   - `_votingDuration`: `1800` (30 minutes)
+6. Interact using different accounts for Owner and Buyers
 
-   * Owner (contractor)
-   * Buyers (multiple addresses)
+---
+
+## 📂 Project Structure
+
+```
+├── PrestigeTowers.sol   # Main smart contract
+└── README.md            # Documentation
+```
 
 ---
 
 ## 📘 Learning Outcomes
 
-By building this project, you learn:
+By studying this project, you learn:
 
-* How to design real-world smart contracts
-* Why state machines matter in Solidity
-* How to manage shared funds safely
-* How on-chain voting works
-* How to reason about trust boundaries
-* How Ethereum contracts handle time and execution
+- How to design state-machine-driven smart contracts
+- Checks-effects-interactions pattern for safe ETH transfers
+- Reentrancy protection without external libraries
+- On-chain voting with two-sided vote tracking
+- Constructor parameter validation and defensive programming
+- Event-driven architecture for off-chain indexing
 
 ---
 
+## ⚠️ Disclaimer
 
-## 📌 Final Notes
+This project has been **internally audited and hardened** but has **not undergone a formal third-party audit**. It is intended for **educational and demonstration purposes**.
 
-This contract focuses on:
+For production deployment, additionally consider:
 
-* Clarity over complexity
-* Explicit logic over magic
-* Learning over optimization
-
-It is intentionally **not over-engineered**, making it ideal for understanding, teaching, and interviews.
+- Formal verification
+- Third-party security audit
+- Integration with battle-tested libraries (e.g., OpenZeppelin)
+- Off-chain data storage for sensitive information
 
 ---
 
 ## 👨‍💻 Author
 
-Built as part of a **Solidity smart contract learning journey**.
+Built as part of a **Solidity smart contract learning journey**.  
 Feel free to fork, experiment, and improve.
 
 ---
